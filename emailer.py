@@ -1,8 +1,8 @@
 """
 emailer.py - HTML Email Generator and Sender
 ==============================================
-This module creates a professional-looking HTML email report of M&A findings
-and sends it via Gmail's SMTP server.
+This module creates a professional-looking HTML email report of ALL press
+releases found, grouped by company, with M&A items highlighted.
 
 HOW EMAIL SENDING WORKS (for beginners):
 - SMTP = "Simple Mail Transfer Protocol" — the standard way computers send email
@@ -13,7 +13,8 @@ HOW EMAIL SENDING WORKS (for beginners):
 HOW THE HTML EMAIL WORKS:
 - Email clients (Gmail, Outlook, etc.) can display HTML emails
 - We build an HTML page with inline CSS (email clients don't support external CSS)
-- The email groups M&A findings by category with a professional design
+- The email shows ALL press releases grouped by company
+- Items matching M&A keywords get a bold [M&A] tag so they stand out
 """
 
 import smtplib
@@ -35,26 +36,53 @@ COLORS = {
     "accent_red": "#e53e3e",       # Red — for failure indicators
     "accent_blue": "#3182ce",      # Blue — for links
     "border": "#e2e8f0",           # Light gray — for borders
+    "ma_tag_bg": "#e53e3e",        # Red background for M&A tags
+    "ma_tag_text": "#ffffff",      # White text for M&A tags
 }
 
-# Colors for each M&A category (makes the email visually scannable)
+# Colors for each M&A category tag
 CATEGORY_COLORS = {
-    "Acquisition": "#e53e3e",       # Red — big deal, attention-grabbing
-    "Divestiture": "#dd6b20",       # Orange
-    "Fund Closing": "#38a169",      # Green — positive milestone
-    "Investment": "#3182ce",        # Blue — standard activity
-    "Partnership/JV": "#805ad5",    # Purple
-    "IPO/Exit": "#d69e2e",         # Gold — milestone event
-    "Other M&A": "#718096",        # Gray — catch-all
+    "Acquisition": "#e53e3e",
+    "Divestiture": "#dd6b20",
+    "Fund Closing": "#38a169",
+    "Investment": "#3182ce",
+    "Partnership/JV": "#805ad5",
+    "IPO/Exit": "#d69e2e",
+    "Other M&A": "#718096",
 }
+
+
+def _build_ma_tag(category):
+    """
+    Build an inline HTML tag badge for an M&A category.
+
+    Args:
+        category (str): The M&A category name (e.g., "Acquisition").
+
+    Returns:
+        str: HTML string for the colored tag badge.
+    """
+    color = CATEGORY_COLORS.get(category, "#718096")
+    return (
+        f'<span style="'
+        f"display: inline-block; "
+        f"background-color: {color}; "
+        f"color: white; "
+        f"font-size: 10px; "
+        f"font-weight: 700; "
+        f"padding: 2px 6px; "
+        f"border-radius: 3px; "
+        f"letter-spacing: 0.3px; "
+        f"margin-right: 6px; "
+        f"vertical-align: middle; "
+        f'">{category}</span>'
+    )
 
 
 def generate_html_report(analysis_results):
     """
-    Generate a professional HTML email from the analysis results.
-
-    This builds a complete HTML page with inline CSS styling that looks good
-    in email clients like Gmail, Outlook, and Apple Mail.
+    Generate a professional HTML email showing ALL press releases grouped
+    by company, with M&A items highlighted using colored tags.
 
     Args:
         analysis_results (dict): Output from analyzer.analyze_results().
@@ -63,37 +91,52 @@ def generate_html_report(analysis_results):
         str: Complete HTML string ready to be sent as an email.
     """
     summary = analysis_results["summary"]
-    ma_by_category = analysis_results.get("ma_by_category", {})
-    ma_items = analysis_results.get("ma_items", [])
+    releases_by_company = analysis_results.get("releases_by_company", {})
     scan_date = datetime.now().strftime("%B %d, %Y")
     scan_time = datetime.now().strftime("%I:%M %p")
 
-    # ── Build the M&A findings section ──
-    # Group items by category and create HTML for each group
-    ma_sections_html = ""
+    # ── Build the press releases section, grouped by company ──
+    # Sort companies alphabetically for consistent ordering
+    sorted_companies = sorted(releases_by_company.keys())
 
-    if ma_items:
-        for category in ["Acquisition", "Divestiture", "Fund Closing",
-                         "Investment", "Partnership/JV", "IPO/Exit", "Other M&A"]:
-            items = ma_by_category.get(category, [])
+    releases_html = ""
+
+    if sorted_companies:
+        for company_name in sorted_companies:
+            items = releases_by_company[company_name]
             if not items:
                 continue
 
-            cat_color = CATEGORY_COLORS.get(category, "#718096")
+            # Count M&A items for this company
+            ma_count = sum(1 for item in items if item.get("is_ma"))
 
-            # Start the category section
-            ma_sections_html += f"""
-            <div style="margin-bottom: 24px;">
+            # Company header — show M&A count if any
+            ma_badge = ""
+            if ma_count > 0:
+                ma_badge = (
+                    f' <span style="'
+                    f"background-color: {COLORS['ma_tag_bg']}; "
+                    f"color: white; "
+                    f"font-size: 10px; "
+                    f"font-weight: 700; "
+                    f"padding: 2px 6px; "
+                    f"border-radius: 3px; "
+                    f"margin-left: 8px; "
+                    f"vertical-align: middle; "
+                    f'">{ma_count} M&amp;A</span>'
+                )
+
+            releases_html += f"""
+            <div style="margin-bottom: 16px;">
                 <div style="
-                    background-color: {cat_color};
+                    background-color: {COLORS['header_bg']};
                     color: white;
                     padding: 8px 16px;
                     border-radius: 6px 6px 0 0;
-                    font-size: 14px;
+                    font-size: 13px;
                     font-weight: bold;
-                    letter-spacing: 0.5px;
                 ">
-                    {category.upper()} ({len(items)})
+                    {company_name}{ma_badge}
                 </div>
                 <div style="
                     border: 1px solid {COLORS['border']};
@@ -103,41 +146,54 @@ def generate_html_report(analysis_results):
                 ">
             """
 
-            # Add each item in this category
+            # Add each press release for this company
             for i, item in enumerate(items):
-                # Alternate row colors for readability
                 row_bg = "#ffffff" if i % 2 == 0 else "#f7fafc"
-                date_str = item.get("date_text", "Date unknown") or "Date unknown"
+                date_str = item.get("date_text", "") or ""
+                is_ma = item.get("is_ma", False)
+                ma_category = item.get("ma_category")
 
-                ma_sections_html += f"""
+                # Build the title line — with M&A tag if applicable
+                tag_html = ""
+                if is_ma and ma_category:
+                    tag_html = _build_ma_tag(ma_category)
+
+                # M&A items get bold titles to stand out during scanning
+                title_style = "font-weight: 700;" if is_ma else ""
+
+                releases_html += f"""
                     <div style="
-                        padding: 12px 16px;
+                        padding: 8px 16px;
                         background-color: {row_bg};
                         border-bottom: 1px solid {COLORS['border']};
+                        line-height: 1.4;
                     ">
-                        <div style="font-size: 14px; color: {COLORS['text_primary']}; margin-bottom: 4px;">
-                            <strong>{item.get('company', 'Unknown')}</strong>
+                        <div style="font-size: 13px;">
+                            {tag_html}<a href="{item.get('url', '#')}"
+                               style="color: {COLORS['accent_blue']}; text-decoration: none; {title_style}"
+                               target="_blank">{item.get('title', 'No title')}</a>
                         </div>
-                        <div style="font-size: 13px; margin-bottom: 4px;">
-                            <a href="{item.get('url', '#')}"
-                               style="color: {COLORS['accent_blue']}; text-decoration: none;"
-                               target="_blank">
-                                {item.get('title', 'No title')}
-                            </a>
-                        </div>
-                        <div style="font-size: 12px; color: {COLORS['text_secondary']};">
+                """
+
+                # Only show date if we have one
+                if date_str:
+                    releases_html += f"""
+                        <div style="font-size: 11px; color: {COLORS['text_secondary']}; margin-top: 2px;">
                             {date_str}
                         </div>
+                    """
+
+                releases_html += """
                     </div>
                 """
 
-            ma_sections_html += """
+            releases_html += """
                 </div>
             </div>
             """
     else:
-        # No M&A items found
-        ma_sections_html = f"""
+        # No press releases found at all
+        releases_html = f"""
         <div style="
             text-align: center;
             padding: 40px 20px;
@@ -145,8 +201,8 @@ def generate_html_report(analysis_results):
             font-size: 16px;
         ">
             <div style="font-size: 48px; margin-bottom: 16px;">📭</div>
-            <div>No M&A-related press releases found in the last
-                 {analysis_results.get('days_lookback', 2)} days.</div>
+            <div>No press releases found in the last
+                 {analysis_results.get('days_lookback', 1)} day(s).</div>
             <div style="font-size: 13px; margin-top: 8px;">
                 This could mean a quiet day, or some sites may have blocked our scraper.
             </div>
@@ -163,7 +219,7 @@ def generate_html_report(analysis_results):
         health_color = COLORS["accent_green"]
         health_label = "Healthy"
     elif success_rate >= 50:
-        health_color = "#d69e2e"  # Yellow/gold
+        health_color = "#d69e2e"
         health_label = "Degraded"
     else:
         health_color = COLORS["accent_red"]
@@ -195,10 +251,10 @@ def generate_html_report(analysis_results):
                 text-align: center;
             ">
                 <h1 style="margin: 0; font-size: 22px; font-weight: 700;">
-                    Infrastructure M&amp;A Tracker
+                    Infrastructure Press Release Digest
                 </h1>
                 <p style="margin: 8px 0 0; font-size: 14px; opacity: 0.85;">
-                    Daily Press Release Scan — {scan_date}
+                    Daily Scan — {scan_date}
                 </p>
             </div>
 
@@ -211,40 +267,40 @@ def generate_html_report(analysis_results):
             ">
                 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;">
                     <tr>
-                        <!-- M&A Items Found -->
-                        <td style="text-align: center; padding: 12px; width: 25%;">
-                            <div style="font-size: 28px; font-weight: 700; color: {COLORS['header_bg']};">
-                                {summary['total_ma_items']}
-                            </div>
-                            <div style="font-size: 11px; color: {COLORS['text_secondary']}; text-transform: uppercase; letter-spacing: 0.5px;">
-                                M&amp;A Items
-                            </div>
-                        </td>
                         <!-- Total Press Releases -->
-                        <td style="text-align: center; padding: 12px; width: 25%; border-left: 1px solid {COLORS['border']};">
+                        <td style="text-align: center; padding: 12px; width: 25%;">
                             <div style="font-size: 28px; font-weight: 700; color: {COLORS['header_bg']};">
                                 {summary['total_press_releases']}
                             </div>
                             <div style="font-size: 11px; color: {COLORS['text_secondary']}; text-transform: uppercase; letter-spacing: 0.5px;">
-                                Press Releases
+                                Total Items
+                            </div>
+                        </td>
+                        <!-- M&A Tagged -->
+                        <td style="text-align: center; padding: 12px; width: 25%; border-left: 1px solid {COLORS['border']};">
+                            <div style="font-size: 28px; font-weight: 700; color: {COLORS['ma_tag_bg']};">
+                                {summary['total_ma_items']}
+                            </div>
+                            <div style="font-size: 11px; color: {COLORS['text_secondary']}; text-transform: uppercase; letter-spacing: 0.5px;">
+                                M&amp;A Tagged
+                            </div>
+                        </td>
+                        <!-- Companies with releases -->
+                        <td style="text-align: center; padding: 12px; width: 25%; border-left: 1px solid {COLORS['border']};">
+                            <div style="font-size: 28px; font-weight: 700; color: {COLORS['accent_green']};">
+                                {len(sorted_companies) if sorted_companies else 0}
+                            </div>
+                            <div style="font-size: 11px; color: {COLORS['text_secondary']}; text-transform: uppercase; letter-spacing: 0.5px;">
+                                Companies
                             </div>
                         </td>
                         <!-- Sites Scanned -->
                         <td style="text-align: center; padding: 12px; width: 25%; border-left: 1px solid {COLORS['border']};">
-                            <div style="font-size: 28px; font-weight: 700; color: {COLORS['accent_green']};">
-                                {summary['successful_scrapes']}
+                            <div style="font-size: 28px; font-weight: 700; color: {COLORS['text_secondary']};">
+                                {summary['successful_scrapes']}/{summary['total_companies']}
                             </div>
                             <div style="font-size: 11px; color: {COLORS['text_secondary']}; text-transform: uppercase; letter-spacing: 0.5px;">
                                 Sites OK
-                            </div>
-                        </td>
-                        <!-- Failed Sites -->
-                        <td style="text-align: center; padding: 12px; width: 25%; border-left: 1px solid {COLORS['border']};">
-                            <div style="font-size: 28px; font-weight: 700; color: {COLORS['accent_red']};">
-                                {summary['failed_scrapes']}
-                            </div>
-                            <div style="font-size: 11px; color: {COLORS['text_secondary']}; text-transform: uppercase; letter-spacing: 0.5px;">
-                                Failed
                             </div>
                         </td>
                     </tr>
@@ -278,7 +334,7 @@ def generate_html_report(analysis_results):
                 </div>
             </div>
 
-            <!-- ═══════ M&A FINDINGS ═══════ -->
+            <!-- ═══════ ALL PRESS RELEASES BY COMPANY ═══════ -->
             <div style="
                 background-color: {COLORS['card_bg']};
                 padding: 24px 32px;
@@ -293,10 +349,10 @@ def generate_html_report(analysis_results):
                     border-bottom: 2px solid {COLORS['header_bg']};
                     padding-bottom: 8px;
                 ">
-                    M&amp;A Activity Detected
+                    Press Releases by Company
                 </h2>
 
-                {ma_sections_html}
+                {releases_html}
             </div>
 
             <!-- ═══════ FOOTER ═══════ -->
@@ -310,7 +366,7 @@ def generate_html_report(analysis_results):
                     Generated at {scan_time} on {scan_date}
                 </p>
                 <p style="margin: 4px 0 0;">
-                    Infrastructure M&amp;A Tracker — Automated Daily Scan
+                    Infrastructure Press Release Tracker — Automated Daily Scan
                 </p>
             </div>
 
@@ -354,15 +410,16 @@ def send_email(html_content, analysis_results):
     sender_password = EMAIL_CONFIG["sender_password"]
     recipient_email = EMAIL_CONFIG["recipient_email"]
 
-    # Build a descriptive subject line
+    # Build a descriptive subject line showing total items (not just M&A)
     summary = analysis_results.get("summary", {})
+    total_count = summary.get("total_press_releases", 0)
     ma_count = summary.get("total_ma_items", 0)
     date_str = datetime.now().strftime("%b %d, %Y")
 
-    if ma_count > 0:
-        subject = f"[Infra M&A] {ma_count} M&A Items Found — {date_str}"
+    if total_count > 0:
+        subject = f"[Infra Digest] {total_count} Press Releases ({ma_count} M&A) — {date_str}"
     else:
-        subject = f"[Infra M&A] Daily Scan Complete — No M&A Activity — {date_str}"
+        subject = f"[Infra Digest] No Press Releases Found — {date_str}"
 
     print(f"\n  Sending email report...")
     print(f"  From: {sender_email}")
@@ -374,14 +431,14 @@ def send_email(html_content, analysis_results):
         # MIMEMultipart allows us to send both plain text and HTML versions
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
-        msg["From"] = f"Infra M&A Tracker <{sender_email}>"
+        msg["From"] = f"Infra Digest <{sender_email}>"
         msg["To"] = recipient_email
 
         # Plain text version (fallback for email clients that don't support HTML)
         plain_text = (
-            f"Infrastructure M&A Daily Report - {date_str}\n\n"
-            f"M&A Items Found: {ma_count}\n"
-            f"Total Press Releases: {summary.get('total_press_releases', 0)}\n"
+            f"Infrastructure Press Release Digest - {date_str}\n\n"
+            f"Total Press Releases: {total_count}\n"
+            f"M&A Tagged: {ma_count}\n"
             f"Sites Scanned: {summary.get('successful_scrapes', 0)}/{summary.get('total_companies', 0)}\n\n"
             f"View the HTML version of this email for the full report."
         )
@@ -424,48 +481,64 @@ if __name__ == "__main__":
     # Create sample analysis results for testing
     sample_results = {
         "scan_date": datetime.now().isoformat(),
-        "days_lookback": 2,
+        "days_lookback": 1,
         "summary": {
             "total_companies": 97,
             "successful_scrapes": 85,
             "failed_scrapes": 12,
             "total_press_releases": 42,
-            "total_ma_items": 7,
+            "total_ma_items": 3,
         },
-        "ma_items": [
-            {
-                "title": "Brookfield Acquires European Data Center Platform",
-                "url": "https://example.com/article1",
-                "company": "Brookfield Asset Management",
-                "ma_category": "Acquisition",
-                "date_text": "January 15, 2024",
-            },
-            {
-                "title": "BlackRock Completes Sale of Infrastructure Portfolio",
-                "url": "https://example.com/article2",
-                "company": "BlackRock",
-                "ma_category": "Divestiture",
-                "date_text": "January 14, 2024",
-            },
-        ],
-        "ma_by_category": {
-            "Acquisition": [
+        "ma_items": [],
+        "ma_by_category": {},
+        "releases_by_company": {
+            "Brookfield Asset Management": [
                 {
                     "title": "Brookfield Acquires European Data Center Platform",
                     "url": "https://example.com/article1",
                     "company": "Brookfield Asset Management",
+                    "is_ma": True,
+                    "ma_category": "Acquisition",
+                    "date_text": "January 15, 2024",
+                },
+                {
+                    "title": "Brookfield Reports Record Q4 Revenue",
+                    "url": "https://example.com/article3",
+                    "company": "Brookfield Asset Management",
+                    "is_ma": False,
+                    "ma_category": None,
                     "date_text": "January 15, 2024",
                 },
             ],
-            "Divestiture": [
+            "BlackRock": [
                 {
                     "title": "BlackRock Completes Sale of Infrastructure Portfolio",
                     "url": "https://example.com/article2",
                     "company": "BlackRock",
+                    "is_ma": True,
+                    "ma_category": "Divestiture",
                     "date_text": "January 14, 2024",
+                },
+                {
+                    "title": "BlackRock Launches New ESG Infrastructure Fund",
+                    "url": "https://example.com/article4",
+                    "company": "BlackRock",
+                    "is_ma": True,
+                    "ma_category": "Fund Closing",
+                    "date_text": "January 14, 2024",
+                },
+                {
+                    "title": "BlackRock CEO Speaks at Davos 2024",
+                    "url": "https://example.com/article5",
+                    "company": "BlackRock",
+                    "is_ma": False,
+                    "ma_category": None,
+                    "date_text": "January 13, 2024",
                 },
             ],
         },
+        "all_press_releases": [],
+        "company_stats": [],
     }
 
     # Generate the HTML

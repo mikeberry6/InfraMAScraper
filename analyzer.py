@@ -511,19 +511,24 @@ def analyze_results(scraper_results, days=2):
         # Step 2: Filter for recent items only
         recent_releases = filter_recent(press_releases, days=days)
 
-        # Step 3: Check each recent item for M&A relevance
+        # Step 3: Tag each recent item with M&A status
+        # ALL press releases are included — M&A keywords are used for tagging only
         company_ma_count = 0
         for pr in recent_releases:
             # Add the company name to each press release
             pr["company"] = company_name
 
-            all_press_releases.append(pr)
-
-            # Check if this is M&A-related
+            # Tag with M&A status (but include ALL items regardless)
             if is_ma_related(pr["title"]):
+                pr["is_ma"] = True
                 pr["ma_category"] = categorize_ma(pr["title"])
                 ma_items.append(pr)
                 company_ma_count += 1
+            else:
+                pr["is_ma"] = False
+                pr["ma_category"] = None
+
+            all_press_releases.append(pr)
 
         company_stats.append({
             "name": company_name,
@@ -535,16 +540,24 @@ def analyze_results(scraper_results, days=2):
         # Show progress for companies with findings
         if recent_releases:
             print(f"  {company_name}: {len(recent_releases)} press releases"
-                  f" ({company_ma_count} M&A)")
+                  f" ({company_ma_count} M&A tagged)")
 
     # ── Build the final results ──
-    # Group M&A items by category for the email report
+    # Group M&A items by category (for reference/stats)
     ma_by_category = {}
     for item in ma_items:
         category = item.get("ma_category", "Other M&A")
         if category not in ma_by_category:
             ma_by_category[category] = []
         ma_by_category[category].append(item)
+
+    # Group ALL press releases by company (for the email digest)
+    releases_by_company = {}
+    for pr in all_press_releases:
+        company = pr.get("company", "Unknown")
+        if company not in releases_by_company:
+            releases_by_company[company] = []
+        releases_by_company[company].append(pr)
 
     # Calculate summary statistics
     success_count = sum(1 for s in company_stats if s["status"] == "success")
@@ -562,6 +575,7 @@ def analyze_results(scraper_results, days=2):
         },
         "ma_items": ma_items,
         "ma_by_category": ma_by_category,
+        "releases_by_company": releases_by_company,
         "all_press_releases": all_press_releases,
         "company_stats": company_stats,
     }

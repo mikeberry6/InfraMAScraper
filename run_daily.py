@@ -98,6 +98,8 @@ def save_reports(analysis_results, html_report):
         "summary": analysis_results["summary"],
         "ma_items": analysis_results["ma_items"],
         "ma_by_category": analysis_results["ma_by_category"],
+        "releases_by_company": analysis_results.get("releases_by_company", {}),
+        "all_press_releases": analysis_results.get("all_press_releases", []),
         "company_stats": analysis_results["company_stats"],
     }
 
@@ -226,8 +228,8 @@ Examples:
     parser.add_argument(
         "--days",
         type=int,
-        default=2,
-        help="Number of days to look back for press releases (default: 2)",
+        default=1,
+        help="Number of days to look back for press releases (default: 1)",
     )
 
     parser.add_argument(
