@@ -22,6 +22,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
+# Resend is an email API service — works when SMTP ports are blocked
+import resend
+
 # ──────────────────────────────────────────────────────────────────────
 # COLOR SCHEME - Used throughout the email design
 # ──────────────────────────────────────────────────────────────────────
@@ -380,15 +383,12 @@ def generate_html_report(analysis_results):
 
 def send_email(html_content, analysis_results):
     """
-    Send the HTML report via Gmail SMTP.
+    Send the HTML report using the Resend API.
 
     HOW THIS WORKS:
-    1. We load your Gmail credentials from config.py
-    2. We connect to Gmail's SMTP server (smtp.gmail.com) on port 587
-    3. We upgrade the connection to TLS (encrypted)
-    4. We log in with your email and App Password
-    5. We send the email
-    6. We close the connection
+    1. We load your Resend API key from config.py
+    2. We call the Resend API to send the email (no SMTP needed)
+    3. Resend handles delivery — works even when SMTP ports are blocked
 
     Args:
         html_content (str): The HTML email body (from generate_html_report).
@@ -406,9 +406,10 @@ def send_email(html_content, analysis_results):
         print("  Make sure config.py exists with your EMAIL_CONFIG settings.")
         return False
 
-    sender_email = EMAIL_CONFIG["sender_email"]
-    sender_password = EMAIL_CONFIG["sender_password"]
     recipient_email = EMAIL_CONFIG["recipient_email"]
+
+    # Set up the Resend API key
+    resend.api_key = EMAIL_CONFIG.get("resend_api_key", "")
 
     # Build a descriptive subject line showing total items (not just M&A)
     summary = analysis_results.get("summary", {})
@@ -422,52 +423,21 @@ def send_email(html_content, analysis_results):
         subject = f"[Infra Digest] No Press Releases Found — {date_str}"
 
     print(f"\n  Sending email report...")
-    print(f"  From: {sender_email}")
+    print(f"  From: onboarding@resend.dev")
     print(f"  To:   {recipient_email}")
     print(f"  Subject: {subject}")
 
     try:
-        # Create the email message
-        # MIMEMultipart allows us to send both plain text and HTML versions
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = f"Infra Digest <{sender_email}>"
-        msg["To"] = recipient_email
-
-        # Plain text version (fallback for email clients that don't support HTML)
-        plain_text = (
-            f"Infrastructure Press Release Digest - {date_str}\n\n"
-            f"Total Press Releases: {total_count}\n"
-            f"M&A Tagged: {ma_count}\n"
-            f"Sites Scanned: {summary.get('successful_scrapes', 0)}/{summary.get('total_companies', 0)}\n\n"
-            f"View the HTML version of this email for the full report."
-        )
-
-        # Attach both versions (email client will pick the best one it supports)
-        msg.attach(MIMEText(plain_text, "plain"))
-        msg.attach(MIMEText(html_content, "html"))
-
-        # Connect to Gmail's SMTP server and send
-        # Port 587 is for TLS (encrypted) connections
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            # Start TLS encryption (protects your password during login)
-            server.starttls()
-
-            # Log in with your credentials
-            server.login(sender_email, sender_password)
-
-            # Send the email
-            server.sendmail(sender_email, recipient_email, msg.as_string())
+        # Send via Resend API — no SMTP ports needed
+        r = resend.Emails.send({
+            "from": "onboarding@resend.dev",
+            "to": recipient_email,
+            "subject": subject,
+            "html": html_content,
+        })
 
         print("  Email sent successfully! ✓")
         return True
-
-    except smtplib.SMTPAuthenticationError:
-        print("  ERROR: Gmail authentication failed!")
-        print("  Check that your App Password in config.py is correct.")
-        print("  You may need to generate a new one at:")
-        print("  https://myaccount.google.com/apppasswords")
-        return False
 
     except Exception as e:
         print(f"  ERROR sending email: {str(e)}")
