@@ -3,22 +3,14 @@ analyzer.py - Press Release Analyzer for Infrastructure M&A
 =============================================================
 This module takes the raw HTML from the scraper and:
 1. Finds press release links, titles, and dates
-2. Scores each item using multiple signals to filter out generic pages
-3. Classifies items as M&A-related using keyword matching
+2. Returns ALL items found by the scraper (no filtering)
+3. Tags items as M&A-related using keyword matching
 4. Categorizes M&A type (Acquisition, Divestiture, etc.)
 
-HOW THE SCORING WORKS (for beginners):
-- Not everything on a company's website is a press release
-- We see generic pages like "How We Invest" or "Our Team" mixed in
-- To tell real press releases from generic pages, we score each item
-  on multiple "signals" — each signal adds or subtracts points:
-  * Does it have a valid date? (REQUIRED — no date = excluded)
-  * Does the URL look like a news article? (+points)
-  * Does the title sound like a headline? (+points)
-  * Does the URL look like a static page? (-points)
-- Items must reach a minimum score (4 points) to be included
-- This approach avoids hard-blocking any single word — it's the
-  COMBINATION of signals that matters
+APPROACH:
+- Include everything the scraper finds — no date or quality filtering
+- Tag items with M&A keywords so they stand out in the email
+- Let the human reviewer decide what's relevant
 """
 
 import re
@@ -27,11 +19,7 @@ import os
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse
 
-# BeautifulSoup parses HTML so we can search through it easily
 from bs4 import BeautifulSoup
-
-# python-dateutil is amazing at parsing dates in many different formats
-# (e.g., "Jan 15, 2024", "2024-01-15", "15/01/2024", etc.)
 from dateutil import parser as date_parser
 
 # ──────────────────────────────────────────────────────────────────────
@@ -100,152 +88,6 @@ MA_CATEGORIES = [
     },
 ]
 
-
-# ──────────────────────────────────────────────────────────────────────
-# MULTI-SIGNAL SCORING - Determines if an item is a real press release
-# ──────────────────────────────────────────────────────────────────────
-
-# Minimum score an item needs to be included in the digest
-# The scoring is designed so that a valid date (+3) plus one more
-# positive signal (e.g., news URL +2) clears the threshold
-SCORE_THRESHOLD = 4
-
-# Past-tense action verbs commonly found in press release headlines
-# These indicate something HAPPENED (an event) vs. a static page description
-PRESS_RELEASE_VERBS = [
-    "announced", "announces", "acquired", "acquires",
-    "closed", "closes", "completed", "completes",
-    "launched", "launches", "invested", "invests",
-    "sold", "sells", "partnered", "partners",
-    "signed", "signs", "raised", "raises",
-    "reached", "reaches", "appointed", "appoints",
-    "named", "names", "selected", "selects",
-    "secured", "secures", "entered", "enters",
-    "expanded", "expands", "agreed", "agrees",
-    "committed", "commits", "finalized", "finalizes",
-    "reported", "reports", "delivered", "delivers",
-]
-
-# URL path segments that indicate a news/press release article
-NEWS_URL_PATTERNS = [
-    "/news/", "/press/", "/releases/", "/media/",
-    "/announcements/", "/newsroom/", "/press-release/",
-    "/press-releases/", "/media-centre/", "/media-center/",
-]
-
-# URL path segments that indicate a generic/static page (not news)
-STATIC_URL_PATTERNS = [
-    "/about/", "/team/", "/approach/", "/strategy/",
-    "/solutions/", "/portfolio/", "/esg/", "/careers/",
-    "/contact/", "/investors/", "/people/", "/leadership/",
-    "/our-approach/", "/how-we-invest/", "/what-we-do/",
-]
-
-
-def score_press_release(title, url, date_parsed, days):
-    """
-    Score an item to determine if it's a real press release.
-
-    Uses multiple signals together — no single signal is a hard block.
-    The combination of signals matters more than any individual one.
-
-    SCORING BREAKDOWN:
-      +3  Valid date within the lookback period (REQUIRED — no date = excluded)
-      +2  URL contains a date pattern (e.g., /2026/ or /01-28/)
-      +2  URL contains a news path (/news/, /press/, /releases/)
-      +2  Title is 5+ words (real headlines are descriptive)
-      +2  Title contains a past-tense action verb (something happened)
-      +1  Title contains $ or % or specific numbers (concrete details)
-      -2  URL contains static page paths (/about/, /team/, /strategy/)
-      -1  Title is 3 or fewer words (too short for a headline)
-      -1  Title starts with generic prefixes ("Our", "The", "How We")
-
-    Args:
-        title (str): The item's title/headline text.
-        url (str): The item's URL.
-        date_parsed (str or None): ISO date string, or None if no date found.
-        days (int): How many days back we're looking.
-
-    Returns:
-        tuple: (score, breakdown) where score is an int and breakdown is a
-               list of strings explaining each signal that fired.
-               Returns (0, ["No valid date"]) if no date — item is excluded.
-    """
-    score = 0
-    breakdown = []
-
-    # ── Signal 1: Date Quality (REQUIRED) ──
-    # No date = automatic exclusion. This alone filters most generic pages.
-    if not date_parsed:
-        return 0, ["No valid date — excluded"]
-
-    try:
-        pr_date = datetime.fromisoformat(date_parsed)
-        cutoff = datetime.now() - timedelta(days=days)
-        if pr_date >= cutoff:
-            score += 3
-            breakdown.append("+3 valid date within lookback")
-        else:
-            # Date exists but is too old — exclude
-            return 0, ["Date outside lookback period — excluded"]
-    except (ValueError, TypeError):
-        return 0, ["Unparseable date — excluded"]
-
-    # ── Signal 2: URL contains a date pattern ──
-    # Press release URLs often have dates like /2026/01/ or /2026-01-28/
-    url_lower = url.lower()
-    if re.search(r"/\d{4}/\d{2}/", url_lower) or re.search(r"/\d{4}-\d{2}[-/]", url_lower):
-        score += 2
-        breakdown.append("+2 URL contains date pattern")
-
-    # ── Signal 3: URL contains a news path ──
-    # Pages under /news/, /press/, /releases/ are likely press releases
-    for pattern in NEWS_URL_PATTERNS:
-        if pattern in url_lower:
-            score += 2
-            breakdown.append(f"+2 URL contains news path ({pattern.strip('/')})")
-            break  # Only count once
-
-    # ── Signal 4: Title length ──
-    word_count = len(title.split())
-    if word_count >= 5:
-        score += 2
-        breakdown.append(f"+2 title is {word_count} words (5+ = headline-length)")
-    elif word_count <= 3:
-        score -= 1
-        breakdown.append(f"-1 title is only {word_count} words (too short)")
-
-    # ── Signal 5: Title contains action verb ──
-    # Real press releases describe events: "acquired", "announced", "closed"
-    title_lower = title.lower()
-    for verb in PRESS_RELEASE_VERBS:
-        if verb in title_lower:
-            score += 2
-            breakdown.append(f"+2 title contains action verb ({verb})")
-            break  # Only count once
-
-    # ── Signal 6: Title contains specific details ($, %, numbers) ──
-    # Concrete details like dollar amounts suggest a real announcement
-    if re.search(r"[\$€£]\s*[\d]", title) or re.search(r"\d+%", title):
-        score += 1
-        breakdown.append("+1 title contains $ or % (specific details)")
-
-    # ── Signal 7: URL looks like a static page (negative) ──
-    for pattern in STATIC_URL_PATTERNS:
-        if pattern in url_lower:
-            score -= 2
-            breakdown.append(f"-2 URL contains static path ({pattern.strip('/')})")
-            break  # Only penalize once
-
-    # ── Signal 8: Title starts with generic prefixes (negative) ──
-    generic_prefixes = ["our ", "the ", "how we ", "about ", "what we "]
-    for prefix in generic_prefixes:
-        if title_lower.startswith(prefix):
-            score -= 1
-            breakdown.append(f"-1 title starts with generic prefix ({prefix.strip()})")
-            break
-
-    return score, breakdown
 
 
 def extract_press_releases(html, base_url):
@@ -580,43 +422,6 @@ def categorize_ma(title):
     return "Other M&A"
 
 
-def filter_and_score(press_releases, days=1):
-    """
-    Filter press releases using multi-signal scoring.
-
-    Each item is scored on multiple signals (date, URL structure, title
-    characteristics). Items must have a valid date AND reach the minimum
-    score threshold to be included. This filters out generic website pages
-    like "How We Invest" or "Our Team" while keeping real press releases.
-
-    Args:
-        press_releases (list): List of press release dicts.
-        days (int): How many days back to include (default: 1 = last 24 hours).
-
-    Returns:
-        list: Only items that pass the scoring threshold, sorted by score
-              (highest first). Each item gets a 'quality_score' field added.
-    """
-    scored = []
-
-    for pr in press_releases:
-        title = pr.get("title", "")
-        url = pr.get("url", "")
-        date_parsed = pr.get("date_parsed")
-
-        # Score this item using all signals
-        score, breakdown = score_press_release(title, url, date_parsed, days)
-
-        # Only include items that meet the minimum threshold
-        if score >= SCORE_THRESHOLD:
-            pr["quality_score"] = score
-            pr["score_breakdown"] = breakdown
-            scored.append(pr)
-
-    # Sort by score (highest first) so the best matches appear at the top
-    scored.sort(key=lambda x: x.get("quality_score", 0), reverse=True)
-
-    return scored
 
 
 def analyze_results(scraper_results, days=2):
@@ -625,10 +430,9 @@ def analyze_results(scraper_results, days=2):
 
     This is the MAIN FUNCTION of this module. It:
     1. Takes raw HTML from the scraper
-    2. Extracts press releases from each company's page
-    3. Filters for recent items
-    4. Identifies M&A-related items
-    5. Categorizes each M&A item
+    2. Extracts all items from each company's page (no filtering)
+    3. Tags items as M&A or Non-M&A using keyword matching
+    4. Categorizes each M&A item by type
 
     Args:
         scraper_results (list): Results from scraper.scrape_all().
@@ -660,15 +464,13 @@ def analyze_results(scraper_results, days=2):
             })
             continue
 
-        # Step 1: Extract all candidate items from this company's page
+        # Step 1: Extract all items from this company's page
         press_releases = extract_press_releases(html, base_url)
 
-        # Step 2: Score and filter — only items with valid dates and
-        # sufficient quality score (>= 4) pass through
-        recent_releases = filter_and_score(press_releases, days=days)
+        # Step 2: Use all extracted items — no filtering
+        recent_releases = press_releases
 
         # Step 3: Tag each item with M&A status
-        # All items that passed scoring are included — M&A keywords tag only
         company_ma_count = 0
         for pr in recent_releases:
             # Add the company name to each press release
@@ -752,54 +554,23 @@ def analyze_results(scraper_results, days=2):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Run this file directly to test the scoring logic
+# Run this file directly to test the M&A tagging logic
 # ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Test the scoring function with example items
-    today = datetime.now().isoformat()
-    yesterday = (datetime.now() - timedelta(days=1)).isoformat()
-    old_date = "2020-01-01T00:00:00"
-
-    test_items = [
-        # Should PASS: real press release with date, news URL, action verb, 5+ words
-        ("Brookfield Completes Acquisition of ABC Company for $2.1 Billion",
-         "https://example.com/news/2026/01/brookfield-completes-acquisition", today),
-
-        # Should PASS: real press release, but lower score (no URL date pattern)
-        ("KKR Announces Final Close of Infrastructure Fund",
-         "https://example.com/press/kkr-final-close", today),
-
-        # Should FAIL: generic page, no date
-        ("How We Invest", "https://example.com/about/how-we-invest", None),
-
-        # Should FAIL: has date but URL is static + title is generic
-        ("Our Approach", "https://example.com/about/our-approach", today),
-
-        # Should FAIL: date is too old
-        ("Brookfield Acquires Old Company",
-         "https://example.com/news/brookfield-old", old_date),
-
-        # Should PASS: real headline with date
-        ("Stonepeak Agrees to Acquire Leading Data Center Platform in $3B Deal",
-         "https://example.com/news/stonepeak-data-center", today),
-
-        # Should FAIL: too short, static URL
-        ("Investor Centre", "https://example.com/investors/", today),
-
-        # Borderline: title is descriptive but URL is in /news/
-        ("Sustainable Investing and Stewardship Report 2024",
-         "https://example.com/news/sustainability-report-2024", today),
+    test_titles = [
+        "Brookfield Completes Acquisition of ABC Company for $2.1 Billion",
+        "KKR Announces Final Close of Infrastructure Fund",
+        "Sustainable Investing and Stewardship Report 2024",
+        "Stonepeak Agrees to Acquire Leading Data Center Platform",
+        "Annual General Meeting Notice",
+        "Macquarie Divests Stake in European Wind Portfolio",
     ]
 
-    print("SCORING TEST RESULTS")
+    print("M&A TAGGING TEST")
     print("=" * 70)
-    print(f"Threshold: {SCORE_THRESHOLD} points\n")
-
-    for title, url, date in test_items:
-        score, breakdown = score_press_release(title, url, date, days=1)
-        status = "PASS" if score >= SCORE_THRESHOLD else "FAIL"
-        ma = " [M&A]" if is_ma_related(title) else ""
-        print(f"  [{status}] Score={score:>2} | {title}{ma}")
-        for signal in breakdown:
-            print(f"           {signal}")
-        print()
+    for title in test_titles:
+        ma = is_ma_related(title)
+        cat = categorize_ma(title) if ma else "—"
+        tag = "M&A" if ma else "Non-M&A"
+        print(f"  [{tag:>7}] {cat:<20} | {title}")
+    print()
