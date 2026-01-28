@@ -3,6 +3,7 @@ data/html_cache/
 data/site_health.json
 reports/*.html
 reports/*.json
+logs/*.log
 __pycache__/
 *.pyc
 venv/
