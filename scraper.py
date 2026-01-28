@@ -292,32 +292,36 @@ def scrape_all(companies=None):
         companies = load_companies()
 
     total = len(companies)
+
+    # Split into HTTP sites (can run in parallel) and JS sites (run sequentially
+    # to avoid Playwright/Chromium exhausting memory on small servers)
+    http_companies = [c for c in companies if not c.get("js_render", False)]
+    js_companies = [c for c in companies if c.get("js_render", False)]
+
     print(f"\n{'='*60}")
     print(f"  SCRAPER: Fetching {total} company press release pages")
-    print(f"  Workers: {MAX_WORKERS} parallel | Timeout: {TIMEOUT_SECONDS}s")
+    print(f"  HTTP sites: {len(http_companies)} ({MAX_WORKERS} parallel)")
+    print(f"  JS sites:   {len(js_companies)} (sequential — saves memory)")
+    print(f"  Timeout: {TIMEOUT_SECONDS}s")
     print(f"{'='*60}\n")
 
     results = []
     start_time = time.time()
 
-    # ThreadPoolExecutor lets us run multiple fetches at the same time
-    # max_workers=5 means up to 5 sites are being fetched simultaneously
+    # ── Phase 1: Fetch HTTP sites in parallel (lightweight) ──
+    counter = [0]  # mutable counter shared across threads
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Submit all fetch jobs to the thread pool
-        # "future_to_company" maps each running job back to its company info
         future_to_company = {}
-        for i, company in enumerate(companies, 1):
-            future = executor.submit(fetch_single_site, company, i, total)
+        for company in http_companies:
+            counter[0] += 1
+            future = executor.submit(fetch_single_site, company, counter[0], total)
             future_to_company[future] = company
 
-        # Collect results as they complete (not necessarily in order)
         for future in as_completed(future_to_company):
             try:
                 result = future.result()
                 results.append(result)
             except Exception as e:
-                # This shouldn't happen (errors are caught in fetch_single_site)
-                # but just in case...
                 company = future_to_company[future]
                 results.append({
                     "name": company["name"],
@@ -327,6 +331,12 @@ def scrape_all(companies=None):
                     "error": str(e),
                     "fetched_at": datetime.now().isoformat(),
                 })
+
+    # ── Phase 2: Fetch JS sites one at a time (Chromium uses ~200-400MB) ──
+    for company in js_companies:
+        counter[0] += 1
+        result = fetch_single_site(company, counter[0], total)
+        results.append(result)
 
     # Calculate and display summary statistics
     elapsed = time.time() - start_time
